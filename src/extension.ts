@@ -2,7 +2,8 @@
 
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { PackageInfo, EditorAccess, fixImports } from './main';
+import * as fs from 'fs';
+import { PackageInfo, EditorAccess, fixImports, relativize } from './main';
 
 /**
  * Returns the set of `pubspec.yaml` files that sit above `activeFileUri` in its
@@ -102,4 +103,76 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
     });
     context.subscriptions.push(cmd);
+
+    const cmd2 = vscode.commands.registerCommand('dart-import.fix-all', async () => {
+        const oc = vscode.window.createOutputChannel('vscode-dart-import');
+        oc.appendLine('RootPath: ' + vscode.workspace.rootPath);
+
+        // Find all dart files in the lib folder.
+        const dartFiles = await vscode.workspace.findFiles("lib/**/*.dart");
+        oc.appendLine('Dart Files: ' + dartFiles.toString());
+
+        vscode.extensions.getExtension('ext')?.exports
+
+
+        for (let dartFile of dartFiles) {
+            // const filename = path.basename(dartFile.fsPath);
+            const filename = dartFile.fsPath;
+            const currentPath = filename.replace(/(\/|\\)[^\/\\]*.dart$/, '');
+            oc.appendLine(`currentPath: ${currentPath}`);
+
+            // Grab the package info.
+            const packageInfo = await fetchPackageInfoFor(dartFile);
+            if (!packageInfo) {
+                vscode.window.showErrorMessage('Failed to initialize extension. Is this a valid Dart/Flutter project?');
+                return null;
+            }
+
+            const libFolder = `${packageInfo.projectRoot}${path.sep}lib`;
+            const relativePath = currentPath.substring(libFolder.length + 1);
+            oc.appendLine(`relativePath: ${relativePath}`);
+
+            fs.readFile(dartFile.path, (exception, data) => {
+                if (exception) {
+                    vscode.window.showErrorMessage(exception.message);
+                }
+
+                let strData = data.toString();
+                const lines = strData.split('\n');
+
+                for (let line of lines) {
+                    if (line.trim().startsWith('import ')) {
+                        const regex = new RegExp(`^\\s*import\\s*(['"])package:${packageInfo.projectName}/([^'"]*)['"]([^;]*);\\s*$`);
+                        const exec = regex.exec(line);
+
+                        if (exec) {
+                            const quote = exec[1];
+                            const importPath = exec[2];
+                            const ending = exec[3];
+                            const relativeImport = relativize(relativePath, importPath, path.sep);
+                            const content = `import ${quote}${relativeImport}${quote}${ending};`;
+
+                            // oc.appendLine(`replacing line: ${line}`);
+                            // oc.appendLine(`with: ${content}`);
+
+                            strData = strData.replace(line, content);
+                        }
+                    }
+                }
+
+                oc.appendLine(`Writing to file: ${dartFile.path}`);
+                // oc.appendLine(`old data: ${data.toString()}`);
+                // oc.appendLine(`new data: ${strData}`);
+
+                
+                fs.writeFile(dartFile.path, strData, 'utf8', (err) => {
+                    if (!err) {
+                        return;
+                    }
+                    vscode.window.showErrorMessage(err.message);
+                });
+            });
+        }
+    });
+    context.subscriptions.push(cmd2);
 }

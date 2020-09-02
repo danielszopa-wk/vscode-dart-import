@@ -1,3 +1,4 @@
+import * as vscode from 'vscode';
 interface PackageInfo {
     projectRoot: string;
     projectName: string;
@@ -28,7 +29,9 @@ interface EditorAccess {
 }
 
 const fixImports = async (editor: EditorAccess, packageInfo: PackageInfo, pathSep: string): Promise<number> => {
-    const currentPath = editor.getFileName().replace(/(\/|\\)[^/\\]*.dart$/, '');
+    const oc = vscode.window.createOutputChannel('vscode-dart-import2');
+    const currentPath = editor.getFileName().replace(/(\/|\\)[^\/\\]*.dart$/, '');
+    oc.appendLine(`currentPath ${currentPath}`);
     const libFolder = `${packageInfo.projectRoot}${pathSep}lib`;
     if (!currentPath.startsWith(libFolder)) {
         const l1 = 'Current file is not on project root or not on lib folder? File must be on $root/lib.';
@@ -36,6 +39,7 @@ const fixImports = async (editor: EditorAccess, packageInfo: PackageInfo, pathSe
         throw Error(`${l1}\n${l2}`);
     }
     const relativePath = currentPath.substring(libFolder.length + 1);
+    oc.appendLine(`relativePath: ${relativePath}`);
     const lineCount = editor.getLineCount();
     let count = 0;
     for (let currentLine = 0; currentLine < lineCount; currentLine++) {
@@ -62,4 +66,55 @@ const fixImports = async (editor: EditorAccess, packageInfo: PackageInfo, pathSe
     return count;
 };
 
-export { PackageInfo, relativize, EditorAccess, fixImports };
+const fixImports2 = async (textDoc: vscode.TextDocument, packageInfo: PackageInfo, pathSep: string): Promise<number> => {
+    const currentPath = textDoc.fileName.replace(/(\/|\\)[^\/\\]*.dart$/, '');
+    const libFolder = `${packageInfo.projectRoot}${pathSep}lib`;
+
+    if (!currentPath.startsWith(libFolder)) {
+        const l1 = 'Current file is not on project root or not on lib folder? File must be on $root/lib.';
+        const l2 = `Your current file path is: '${currentPath}' and the lib folder according to the pubspec.yaml file is '${libFolder}'.`;
+        throw Error(`${l1}\n${l2}`);
+    }
+
+    const relativePath = currentPath.substring(libFolder.length + 1);
+    const lineCount = textDoc.lineCount;
+
+    let count = 0;
+    for (let currentLine = 0; currentLine < lineCount; currentLine++) {
+        const line: string = textDoc.lineAt(currentLine).text;
+        if (line.trim().length === 0) {
+            continue;
+        }
+
+        const content = line.trim();
+        if (!content.startsWith('import ')) {
+            break;
+        }
+
+        const regex = new RegExp(`^\\s*import\\s*(['"])package:${packageInfo.projectName}/([^'"]*)['"]([^;]*);\\s*$`);
+        const exec = regex.exec(content);
+        if (exec) {
+            const quote = exec[1];
+            const importPath = exec[2];
+            const ending = exec[3];
+            const relativeImport = relativize(relativePath, importPath, pathSep);
+            const content = `import ${quote}${relativeImport}${quote}${ending};`;
+
+            const workspaceEdit = new vscode.WorkspaceEdit();
+            workspaceEdit.replace(
+                textDoc.uri,
+                new vscode.Range(currentLine, 0, currentLine, content.length),
+                content
+            );
+            const success = await vscode.workspace.applyEdit(workspaceEdit);
+            if (success) {
+                vscode.window.showInformationMessage('Success in ' + relativePath);
+            }
+
+            count++; 
+        }
+    }
+    return count;
+}
+
+export { PackageInfo, relativize, EditorAccess, fixImports, fixImports2 };
